@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,8 +17,10 @@ import (
 
 const (
 	DKHost   = "8.130.85.236"
-	Duration = time.Second * 60
+	Duration = time.Second * 5
 )
+
+var concurrentCnt = 2
 
 const (
 	AppID      = "web_abcdefg123456789"
@@ -44,8 +49,6 @@ var (
 	flagChan   = make(chan struct{}, 1)
 	outputChan = make(chan *counter, 10)
 )
-
-var concurrentCnt = 40
 
 var errorBody = `error,sdk_name=df_android_rum_sdk,sdk_version=2.0.26,app_id=___APPID___,env=___ENV___,service=browser,version=___VERSION___,userid=6931fa8d-769b-46ef-998f-34fc20947562,session_id=49c6f9c2-318b-4c99-957d-b514db8706ee,session_type=user,is_signin=F,os=Mac\\ OS,os_version=10.15.7,os_version_major=10,browser=Chrome,browser_version=103.0.0.0,browser_version_major=103,screen_size=1440*900,network_type=4g,view_id=8a5fcfb3-9f18-465e-8598-5adcc9924abc,view_url=http://localhost:8080/index.html?1111,view_host=localhost:8080,view_path=/index.html,view_path_group=/index.html,view_url_query={},error_source=source,error_type=java_crash,error_handling=unhandled error_message="manual err",error_stack="java.lang.ArithmeticException: divide by zero
  at prof.wang.activity.TeamInvitationActivity.o0(Unknown Source:1)
@@ -125,9 +128,81 @@ type counter struct {
 	failure int
 }
 
-func doSend(ctx context.Context, typ RUMType) {
+func getReplayBody() (string, io.ReadSeeker) {
 
-	cnt := &counter{}
+	buf := bytes.NewBuffer(nil)
+
+	w := multipart.NewWriter(buf)
+
+	/**
+	2023/06/20 09:43:28 k: records_count, v: 429
+	2023/06/20 09:43:28 k: index_in_view, v: 0
+	2023/06/20 09:43:28 k: source, v: browser
+	2023/06/20 09:43:28 k: sdk_version, v: <<< SDK_VERSION >>>
+	2023/06/20 09:43:28 k: start, v: 1677812722000
+	2023/06/20 09:43:28 k: end, v: 1676968025001
+	2023/06/20 09:43:28 k: app_id, v: appid_F5FPTn2aCpAY9Fb95Fu4Z6
+	2023/06/20 09:43:28 k: view_id, v: 11e81e9a-8464-49d4-86df-e66a90b9e033
+	2023/06/20 09:43:28 k: creation_reason, v: init
+	2023/06/20 09:43:28 k: session_id, v: f4b0ba4f-6116-462d-9929-2db106d7b9d4
+	2023/06/20 09:43:28 k: env, v: test
+	2023/06/20 09:43:28 k: service, v: test
+	2023/06/20 09:43:28 k: version, v: 1.0.0
+	2023/06/20 09:43:28 k: raw_segment_size, v: 51897
+	2023/06/20 09:43:28 k: has_full_snapshot, v: true
+	2023/06/20 09:43:28 k: sdk_name, v: df_web_rum_sdk
+	2023/06/20 09:43:28 ------------------------------------------
+	2023/06/20 09:43:28 filename: segment
+	2023/06/20 09:43:28 file segment saved
+	*/
+
+	_ = w.WriteField("records_count", "429")
+	w.WriteField("index_in_view", "0")
+	w.WriteField("source", "browser")
+	w.WriteField("sdk_version", "v3.1.0")
+	w.WriteField("start", strconv.FormatInt(time.Now().Add(time.Second*10).UnixMilli(), 10))
+	w.WriteField("end", strconv.FormatInt(time.Now().UnixMilli(), 10))
+	w.WriteField("app_id", AppID)
+	w.WriteField("view_id", "11e81e9a-8464-49d4-86df-e66a90b9e033")
+	w.WriteField("creation_reason", "init")
+	w.WriteField("session_id", "f4b0ba4f-6116-462d-9929-2db106d7b9d4")
+	w.WriteField("env", AppEnv)
+	w.WriteField("service", "session-replay")
+	w.WriteField("version", AppVersion)
+	w.WriteField("raw_segment_size", "51897")
+	w.WriteField("has_full_snapshot", "true")
+	w.WriteField("sdk_name", "df_web_rum_sdk")
+
+	wp, err := w.CreateFormFile("segment", "segment")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	f, err := os.Open("testdata/segment")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer f.Close()
+
+	if _, err := io.Copy(wp, f); err != nil {
+		log.Fatal(err)
+	}
+
+	w.Close()
+
+	body := buf.Bytes()
+
+	log.Printf("body length: %d\n", len(body))
+
+	return w.FormDataContentType(), bytes.NewReader(body)
+}
+
+func getRUMBody(typ RUMType) (string, io.ReadSeeker) {
+
+	if typ == RUMSessionReplay {
+		return getReplayBody()
+	}
 
 	pts := data[typ]
 
@@ -138,7 +213,14 @@ func doSend(ctx context.Context, typ RUMType) {
 
 	log.Printf("body length: %d\n", len(pts))
 
-	body := strings.NewReader(pts)
+	return "text/plain;charset=UTF-8", strings.NewReader(pts)
+}
+
+func doSend(ctx context.Context, typ RUMType) {
+
+	cnt := &counter{}
+
+	contentType, body := getRUMBody(typ)
 
 	for {
 
@@ -151,7 +233,13 @@ func doSend(ctx context.Context, typ RUMType) {
 				log.Printf("seek error: %s", err)
 				continue
 			}
-			resp, err := http.Post(rumEndpoint, "text/plain;charset=UTF-8", body)
+
+			ep := rumEndpoint
+			if typ == RUMSessionReplay {
+				ep = replayEndPoint
+			}
+
+			resp, err := http.Post(ep, contentType, body)
 			if err != nil {
 				cnt.failure++
 				log.Println(err)
@@ -163,6 +251,8 @@ func doSend(ctx context.Context, typ RUMType) {
 					if resp.StatusCode/100 == 2 {
 						cnt.ok++
 					} else {
+						body, _ := io.ReadAll(resp.Body)
+						log.Println(string(body))
 						cnt.failure++
 					}
 				}(resp)
@@ -185,7 +275,7 @@ func main() {
 
 			<-flagChan
 			wg.Add(1)
-			doSend(ctx, RUMResource)
+			doSend(ctx, RUMSessionReplay)
 			wg.Done()
 
 		}(ctx)
