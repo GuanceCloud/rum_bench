@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	DKHost   = "8.130.85.236"
-	Duration = time.Second * 5
+	DKHost   = "172.17.231.136"
+	Duration = time.Second * 60
 )
 
 var concurrentCnt = 2
@@ -42,11 +42,13 @@ const (
 )
 
 var (
+	pingEndpoint   = fmt.Sprintf("http://%s:9529%s", DKHost, "/v1/ping")
 	rumEndpoint    = fmt.Sprintf("http://%s:9529%s", DKHost, "/v1/write/rum?precision=ns")
 	replayEndPoint = fmt.Sprintf("http://%s:9529%s", DKHost, "/v1/write/rum/replay")
 )
 
 var (
+	signalChan = make(chan struct{}, 1)
 	outputChan = make(chan *counter, 10)
 )
 
@@ -275,7 +277,19 @@ func main() {
 	wg := &sync.WaitGroup{}
 	for i := 0; i < concurrentCnt; i++ {
 
+		time.Sleep(time.Millisecond * 3)
+
 		go func(ctx context.Context) {
+
+			resp, err := http.Get(pingEndpoint)
+			if err != nil {
+				log.Printf("fail to request /v1/ping: %s", err)
+			}
+
+			log.Println(resp.Status)
+
+			<-signalChan
+
 			wg.Add(1)
 			doSend(ctx, RUMType(benchType))
 			wg.Done()
@@ -298,6 +312,7 @@ func main() {
 		close(exitChan)
 	}()
 
+	close(signalChan)
 	time.Sleep(Duration)
 	f()
 
