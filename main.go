@@ -3,12 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,13 +43,14 @@ const (
 
 var (
 	rumEndpoint    = fmt.Sprintf("http://%s:9529%s", DKHost, "/v1/write/rum?precision=ns")
-	replayEndPoint = fmt.Sprintf("http://%s:9529%s", DKHost, "/v1/write/rum/replay?precision=ns")
+	replayEndPoint = fmt.Sprintf("http://%s:9529%s", DKHost, "/v1/write/rum/replay")
 )
 
 var (
-	flagChan   = make(chan struct{}, 1)
 	outputChan = make(chan *counter, 10)
 )
+
+var sessionReplayB64 = "eFx1MDA5Y1x1MDAwY8OLQQrDgyBcdTAwMTBGw6HCu8O8a0HCrcK1ScOmKl1JwrRcdTAwMWRcdTAwMjFBw5FcdTAwODFcdTAwMTIkd8KvwrtcdTAwMDdcdTAwMWZvwqDCpcK9wrTDmEHDr1x1MDA4MVx1MDAxOCRcdTAwODBcdTAwMDY4w6UvXHUwMDBiw6jCuVhcdTAwMDVuw6lcdTAwMDNcdTAwMDJcdTAwOGJUw5LDuih7OMK4dMKhw5XCrEZDw6FcdTAwOTfCozDDiG7DhsOfCnLDlTTDh1x1MDAxOcO5TF3Dglknwr1cdTAwMTbDt3DDlmzDhnlcdTAwN2bDv1x1MDAwMVx1MDAwMFx1MDAwMMO"
 
 var errorBody = `error,sdk_name=df_android_rum_sdk,sdk_version=2.0.26,app_id=___APPID___,env=___ENV___,service=browser,version=___VERSION___,userid=6931fa8d-769b-46ef-998f-34fc20947562,session_id=49c6f9c2-318b-4c99-957d-b514db8706ee,session_type=user,is_signin=F,os=Mac\\ OS,os_version=10.15.7,os_version_major=10,browser=Chrome,browser_version=103.0.0.0,browser_version_major=103,screen_size=1440*900,network_type=4g,view_id=8a5fcfb3-9f18-465e-8598-5adcc9924abc,view_url=http://localhost:8080/index.html?1111,view_host=localhost:8080,view_path=/index.html,view_path_group=/index.html,view_url_query={},error_source=source,error_type=java_crash,error_handling=unhandled error_message="manual err",error_stack="java.lang.ArithmeticException: divide by zero
  at prof.wang.activity.TeamInvitationActivity.o0(Unknown Source:1)
@@ -178,14 +180,12 @@ func getReplayBody() (string, io.ReadSeeker) {
 		log.Fatal(err)
 	}
 
-	f, err := os.Open("testdata/segment")
+	fileBytes, err := base64.StdEncoding.DecodeString(sessionReplayB64)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	defer f.Close()
-
-	if _, err := io.Copy(wp, f); err != nil {
+	if _, err := wp.Write(fileBytes); err != nil {
 		log.Fatal(err)
 	}
 
@@ -266,16 +266,18 @@ func doSend(ctx context.Context, typ RUMType) {
 
 func main() {
 
+	var benchType string
+	flag.StringVar(&benchType, "type", string(RUMResource), "--type=resource|error|session_replay")
+	flag.Parse()
+
 	ctx, f := context.WithCancel(context.Background())
 
 	wg := &sync.WaitGroup{}
 	for i := 0; i < concurrentCnt; i++ {
 
 		go func(ctx context.Context) {
-
-			<-flagChan
 			wg.Add(1)
-			doSend(ctx, RUMSessionReplay)
+			doSend(ctx, RUMType(benchType))
 			wg.Done()
 
 		}(ctx)
@@ -296,7 +298,6 @@ func main() {
 		close(exitChan)
 	}()
 
-	close(flagChan)
 	time.Sleep(Duration)
 	f()
 

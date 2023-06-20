@@ -1,16 +1,20 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
-	"io"
+	"os"
 	"testing"
 )
 
 func Test(t *testing.T) {
-	ct, r := getReplayBody()
+	txt, err := os.ReadFile("./testdata/segment")
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	fmt.Println(ct)
-	text, _ := io.ReadAll(r)
-
-	fmt.Println(string(text))
+	str := base64.StdEncoding.EncodeToString(txt)
+	fmt.Println("-------------")
+	fmt.Println(str)
+	fmt.Println("-------------")
 }
